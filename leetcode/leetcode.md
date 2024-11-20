@@ -96,3 +96,167 @@ class Solution:
         out.right=self.buildTree(pre_right_val,right_val)
         return out
 ```
+
+
+## 117. Populating Next Right Pointers in Each Node II
+
+
+这道题，其实是一道相当trick的题目，注意follow up，要求o(1)空间复杂度。
+
+如果不关注follow up，用传统的二叉树框架，这里可能使用层次遍历，如果使用前序、中序、后序的框架，可能前序遍历，比较适用（未验证）。对于某个节点，其左子结点的next，是右节点（如果不为空），或者该节点next的第一个不为空的子节点（**这里还有个trick的地方，就是如果该节点的next没有子节点，则需要到next的next继续找第一个不为空的子节点**）。
+
+
+如果关注follow up，这意味着，我们套用前序、中序、后序的框架，这里不好用了，因为这里不能递归调用。其次，对于层次遍历，由于queue的空间复杂度为o(n)，其实这里也不适用。
+
+因为这道题目，并不是一个完全的二叉树题目，其与链表有一定的交集。
+
+针对每个节点进行分析，我们会发现，如果第n层已经完成next指针的设置了，那么对于n+1层，我们要做的是，从第一个不为空的指针，以此向后找其next，然后一直遍历，直到最右边。特别注意的是，在遍历的时候，不仅仅子节点向前走，父节点，也需要向前走
+
+```python
+"""
+# Definition for a Node.
+class Node:
+    def __init__(self, val: int = 0, left: 'Node' = None, right: 'Node' = None, next: 'Node' = None):
+        self.val = val
+        self.left = left
+        self.right = right
+        self.next = next
+"""
+
+class Solution:
+    def connect(self, root: 'Node') -> 'Node':
+        if root is None:
+            return None
+        
+        last_a=root
+
+        def get_next(a,b):
+            while True:
+                if a is None:
+                    return None,None
+                if a.left:
+                    if a.left is not b:
+                        return a,a.left
+                if a.right:
+                    if a.right is not b:
+                        return a.next,a.right # 这里需要特别注意，父节点，也要向右走
+                a=a.next
+        
+        while last_a:
+            a=last_a
+            b=None
+            first_b=None
+            while True:
+                next_a,next_b=get_next(a,b)
+                if first_b is None:
+                    first_b=next_b
+                if next_b is None:
+                    break
+                if b:
+                    b.next=next_b
+                b=next_b
+                a=next_a
+                
+            last_a=first_b
+        return root
+            
+```
+
+
+## 114. Flatten Binary Tree to Linked List
+
+这也是一道链表与二叉树结合的题目
+
+这道题的解法有两种：
+1. 空间换时间，使用递归
+2. 时间换空间，多次遍历
+
+首先说一下空间换时间，这个的思路就非常直观，对于每一个子树都进行flatten操作，返回flatten的头结点与尾结点，然后再与父节点进行拼接，代码如下：
+
+```python
+# Definition for a binary tree node.
+# class TreeNode:
+#     def __init__(self, val=0, left=None, right=None):
+#         self.val = val
+#         self.left = left
+#         self.right = right
+class Solution:
+    def flatten(self, root: Optional[TreeNode]) -> None:
+        """
+        Do not return anything, modify root in-place instead.
+        """
+        self.my_flatten(root)
+
+    
+    def my_flatten(self,root):
+        if root is None:
+            return None,None
+        
+        l_front,l_end=self.my_flatten(root.left)
+        r_front,r_end=self.my_flatten(root.right)
+
+        root.left=None
+        root.right=None
+
+        if l_front is None and r_front is None:
+            return root,root
+        elif l_front is not None:
+            root.right=l_front
+            if r_front:
+                l_end.right=r_front
+                return root,r_end
+            else:
+                return root,l_end
+        else:
+            root.right=r_front
+            return root,r_end
+
+        
+```
+
+
+对于空间换时间，其原理如下：
+1. 找到最左边的拥有左子树的节点
+2. 对该节点进行处理，将其flatten
+3. 回到1，继续，直到找不到符合条件的节点
+思想其实不难，但是细节较多
+
+代码如下：
+```python
+# Definition for a binary tree node.
+# class TreeNode:
+#     def __init__(self, val=0, left=None, right=None):
+#         self.val = val
+#         self.left = left
+#         self.right = right
+class Solution:
+    def flatten(self, root: Optional[TreeNode]) -> None:
+        """
+        Do not return anything, modify root in-place instead.
+        """
+        if root is None:
+            return None
+        run_stu=True
+        while run_stu:
+            last_node=root
+
+            now_node=root
+            run_stu=False
+            while True:
+                if now_node.left is not None:
+                    run_stu=True
+                    last_node=now_node
+                    now_node=now_node.left
+                elif now_node.right is not None:
+                    now_node=now_node.right
+                else:
+                    break
+            
+            # print(f'{last_node.val} , {now_node.val}')
+
+            if run_stu:
+                now_node.right=last_node.right
+                last_node.right=last_node.left
+                last_node.left=None
+
+```
