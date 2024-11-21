@@ -260,3 +260,46 @@ class Solution:
                 last_node.left=None
 
 ```
+
+## 124. Binary Tree Maximum Path Sum
+
+这道题的标签是hard，但是其思路是非常直观地，简单来说，就是找到左子树的一个path，右子树的一个path，然后与父节点进行结合，来找出最长的路径。
+
+根据上面的思路，首先这是一道后序遍历的题目。其次，这里还有一个细节需要注意，我们在返回的时候，只能选择左子树返回，或者右子树返回，或者根节点单独返回，**不能左右子树结合后返回**。
+
+
+```python
+# Definition for a binary tree node.
+# class TreeNode:
+#     def __init__(self, val=0, left=None, right=None):
+#         self.val = val
+#         self.left = left
+#         self.right = right
+class Solution:
+    def maxPathSum(self, root: Optional[TreeNode]) -> int:
+        self.out=None
+        self.post_order(root)
+        return self.out
+    
+    def post_order(self,root):
+        if root is None:
+            return 0
+
+        l=self.post_order(root.left)
+        r=self.post_order(root.right)
+
+        out=root.val
+        out=max(out,root.val+l)
+        out=max(out,root.val+r)
+        fin_out=max(out,root.val+l+r)
+
+        # print(f'{root.val} , {out} , {self.out}')
+
+        if self.out is None or self.out<fin_out:
+            self.out=fin_out
+        return out
+```
+
+# 一些总结
+
+1. 有一些二叉树与链表结合的题目，还是比较trick的
