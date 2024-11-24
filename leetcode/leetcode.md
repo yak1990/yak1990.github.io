@@ -299,6 +299,162 @@ class Solution:
             self.out=fin_out
         return out
 ```
+## 222. Count Complete Tree Nodes
+
+这个题目怎么说呢，一开始其实想复杂了。
+
+首先，这里面的完全二叉树，其实规律性相当强。我的第一个想法是，首先看下最左边的深度，然后看下最右边的深度，如果相等，那么是一个完全二叉树，直接计算即可，如果不等，那么问题转化为找到最后数的最后一行，有几个节点，假设是一个完全的数，我们把0定义为向左看，1定义为向右看，那么最左边是 [0,0,...,0]，最右边是[1,1,...,1,1],这个可以转换为一个二分查找的问题，找到第一个不为空的节点，然后计算总数。这个思路的代码如下：
+
+```python
+# Definition for a binary tree node.
+# class TreeNode:
+#     def __init__(self, val=0, left=None, right=None):
+#         self.val = val
+#         self.left = left
+#         self.right = right
+class Solution:
+    def countNodes(self, root: Optional[TreeNode]) -> int:
+        if root is None:
+            return 0
+        
+        l=root
+        l_count=0
+        while l:
+            l=l.left
+            l_count+=1
+        
+        r=root
+        r_count=0
+        while r:
+            r=r.right
+            r_count+=1
+        print(f'{l_count}, {r_count}')
+        if l_count==r_count:
+            a_list=[math.pow(2,i) for i in range(l_count)]
+            out=sum(a_list)
+            return int(out)
+        
+
+        r=int(math.pow(2,r_count)-1)
+        l=int(0)
+
+        level=r_count
+        def get_path(input_num,count):
+            out=[]
+            while count>0:
+                if input_num%2==0:
+                    out.append(0)
+                else:
+                    out.append(1)
+                input_num=int(input_num/2)
+                
+                count=count-1
+            out=[i for i in reversed(out)]
+            return out
+        while l<r:
+            mid=int((l+r)/2)
+            now_path=get_path(mid,level)
+            print(f'begin: {l}, {r} {mid} {now_path}')
+            tmp=root
+            for i in now_path:
+                if i>0:
+                    tmp=tmp.right
+                else:
+                    tmp=tmp.left
+                if tmp:
+                    print(f'{i} {tmp.val}')
+                else:
+                    print(f'{i} None')
+            if tmp:
+                l=mid
+            else:
+                r=mid
+            print(f'end {l}, {r}')
+            if l+1==r:
+                break
+        a_list=[math.pow(2,i) for i in range(l_count-1)]
+        out=sum(a_list)+l+1
+        return int(out)
+```
+
+上面的思路，其实想复杂了，这个题目的难度是easy，其实对于一个完全数，其左子树、右子树，一定也是一个完全树。因此，我们首先计算左边的深度，与右边的深度，如果相等，那么直接返回，如果不等，那么计算左子树、右子树，然后+1返回即可。
+代码如下：
+
+```python
+# Definition for a binary tree node.
+# class TreeNode(object):
+#     def __init__(self, val=0, left=None, right=None):
+#         self.val = val
+#         self.left = left
+#         self.right = right
+class Solution(object):
+    def countNodes(self, root):
+        """
+        :type root: Optional[TreeNode]
+        :rtype: int
+        """
+        if root is None:
+            return 0
+
+        l_count=0
+        tmp=root
+        while tmp:
+            l_count+=1
+            tmp=tmp.left
+        r_count=0
+        tmp=root
+        while tmp:
+            r_count+=1
+            tmp=tmp.right
+        if l_count==r_count:
+            a_list=[math.pow(2,i) for i in range(l_count)]
+            out=sum(a_list)
+            out=int(out)
+            return out
+
+        l=self.countNodes(root.left)
+        r=self.countNodes(root.right)
+
+        return l+r+1
+```
+## 530. Minimum Absolute Difference in BST
+
+这道题不难。
+这道题个人的第一个反应是，检查每个节点与其子节点的difference，然后输出。这个思路依赖的前提是相邻的数字必须属于父子节点。但是对于平衡二叉树，这个前提是错误的。比如，平衡二叉树的左子树都小于根节点，所以左子树的最右端节点，相邻的下一个数字是根节点，与之前假设的前提是矛盾的。
+
+想清楚之后，我们知道bst如果按照中序遍历，其实是一个顺序列表，因此，我们中序遍历，然后检查与上一个节点的difference，然后输出。
+
+代码如下：
+
+```python
+# Definition for a binary tree node.
+# class TreeNode:
+#     def __init__(self, val=0, left=None, right=None):
+#         self.val = val
+#         self.left = left
+#         self.right = right
+class Solution:
+    def getMinimumDifference(self, root: Optional[TreeNode]) -> int:
+        self.last_value=None
+        self.out=None
+        self.in_order(root)
+        return self.out
+
+    def in_order(self,root):
+        if root is None:
+            return 
+
+        self.in_order(root.left)
+
+        if self.last_value is not None:
+            tmp=abs(root.val-self.last_value)
+            if self.out is None or tmp<self.out:
+                self.out=tmp
+        self.last_value=root.val
+
+
+        self.in_order(root.right)
+```
 
 # 一些总结
 
