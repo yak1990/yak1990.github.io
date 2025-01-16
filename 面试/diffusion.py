@@ -24,6 +24,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader, random_split
+import torch.optim as optim
 
 from lightning.pytorch import LightningDataModule, LightningModule, Trainer, callbacks
 from lightning.pytorch.cli import LightningCLI
@@ -35,6 +36,11 @@ if _TORCHVISION_AVAILABLE:
     import torchvision
     from torchvision import transforms
     from torchvision.utils import save_image
+
+import numpy as np
+from torch.utils.tensorboard import SummaryWriter
+import time
+import os
 
 def get_dir_path():
     out = path.join(path.dirname(__file__),"Datasets")
@@ -132,7 +138,7 @@ class Diffusion(nn.Module):
             mid_net_list.append(nn.Conv2d(hidden_dim,hidden_dim,kernel_size=3,padding=1))
             mid_net_list.append(nn.GroupNorm(group_num,hidden_dim))
             mid_net_list.append(nn.LeakyReLU())
-            mid_net_list.append(nn.Dropout2d())
+            # mid_net_list.append(nn.Dropout2d())
         self.mid_net=nn.Sequential(
             *mid_net_list
         )
@@ -161,20 +167,26 @@ class Diffusion(nn.Module):
 class DiffusionLightning(LightningModule):
    
 
-    def __init__(self, H,W,C,hidden_dim,group_num,layout_num,step_num):
+    def __init__(self, H,W,C,hidden_dim,group_num,layout_num,
+                 step_num=1000,beta_start=1e-4,beta_end=0.02):
         super().__init__()
         self.save_hyperparameters()
+        self.H=H
+        self.W=W
+        self.C=C
         self.step_num=step_num
+        self.beta_start=beta_start
+        self.beta_end=beta_end
         self.net=Diffusion( H,W,C,hidden_dim,group_num,layout_num,step_num)
         self.init_diffusion_params()
     
     def init_diffusion_params(self):
-        beta=1/self.step_num
 
-        self.beta=torch.tensor([beta for _ in range(self.step_num)])
+        self.beta=torch.linspace(self.beta_start,self.beta_end,self.step_num).cuda()
+
         self.alpha=1-self.beta
 
-        self.hat_alpha=torch.cumprod(self.alpha)
+        self.hat_alpha=torch.cumprod(self.alpha,dim=-1)
 
 
 
@@ -183,16 +195,16 @@ class DiffusionLightning(LightningModule):
         noise_data=torch.randn_like(input_data)
         step_data=torch.randint(0,self.step_num,(B,))
         hat_alpha=self.hat_alpha[step_data].view(B,1,1,1)
-        img_corr=torch.sqrt(self.hat_alpha)
+        img_corr=torch.sqrt(hat_alpha)
         noise_corr=1-hat_alpha
 
         out_img=img_corr*input_data+noise_corr*noise_data
-        return out_img
+        return out_img,step_data,noise_data
 
 
 
-    def forward(self, input_data,input_step):
-        return self.net(input_data,input_step)
+    def forward(self, noise_img,step):
+        return self.net(noise_img,step)
 
     def training_step(self, batch, batch_idx):
         return self._common_step(batch, batch_idx, "train")
@@ -201,7 +213,7 @@ class DiffusionLightning(LightningModule):
         self._common_step(batch, batch_idx, "val")
 
     def test_step(self, batch, batch_idx):
-        self._common_step(batch, batch_idx, "test")
+        return self._common_step(batch, batch_idx, "test")
 
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
         x = self._prepare_batch(batch)
@@ -210,15 +222,37 @@ class DiffusionLightning(LightningModule):
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
 
-    def _prepare_batch(self, batch):
-        x, _ = batch
-        return x.view(x.size(0), -1)
+    # def _prepare_batch(self, batch):
+    #     x, _ = batch
+    #     return x.view(x.size(0), -1)
 
     def _common_step(self, batch, batch_idx, stage: str):
-        x = self._prepare_batch(batch)
-        loss = F.mse_loss(x, self(x))
+        # x = self._prepare_batch(batch)
+        x=batch
+        noise_img,step,noise_data=self.add_noise(x)
+        loss = F.mse_loss(noise_data, self(noise_img,step))
         self.log(f"{stage}_loss", loss, on_step=True)
         return loss
+    
+    def sample_image(self,batch_size):
+        init_data=torch.randn([batch_size,self.C,self.H,self.W]).cuda()
+        for i in reversed(range(self.step_num)):
+            if i>0:
+                noise_data=torch.randn([batch_size,self.C,self.H,self.W]).cuda()
+            else:
+                noise_data=torch.zeros([batch_size,self.C,self.H,self.W]).cuda()
+            step_data=torch.tensor([i]).repeat(batch_size).cuda()
+            predict_noise=self(init_data,step_data)
+
+            alpha_t=self.alpha[i]
+            hat_alpha_t=self.hat_alpha[i]
+            sigma_t=self.beta[i].sqrt()
+
+            denoise_data=init_data-predict_noise*(1-alpha_t)/torch.sqrt(1-hat_alpha_t)
+            denoise_data=denoise_data/alpha_t.sqrt()+sigma_t*noise_data
+            init_data=denoise_data
+        return init_data
+
 
 
 class MyDataModule(LightningDataModule):
@@ -259,6 +293,12 @@ def cli_main():
     predictions = cli.trainer.predict(ckpt_path="best", datamodule=cli.datamodule)
     print(predictions[0])
 
+def write_image(input_img,img_path):
+    a=torchvision.utils.make_grid(
+            tensor=input_img
+        )
+    save_image(a, img_path)
+
 def main():
     # a=Diffusion(64,64,1,128,8,3,100)
     # b=torch.rand((8,1,64,64))
@@ -266,11 +306,99 @@ def main():
     # d=a(b,c)
     # print(d.shape)
 
-    a=MyDataModule()
-    b=a.train_dataloader()
-    for i in b:
-        data,label=i
-        print(data.shape,label.shape)
+    all_data=MyDataModule()
+    train_data=all_data.train_dataloader()
+    eval_data=all_data.test_dataloader()
+
+    data_mean=0.12
+    data_std=0.31
+
+    def normalize(input_data):
+        return (input_data-data_mean)/data_std
+
+    model_light=DiffusionLightning(28,28,1,128,8,8,1000).cuda()
+    model_light.net.cuda()
+
+
+    def sample_img(img_path):
+            model_light.eval()
+            model_light.net.eval()
+            with torch.no_grad():
+                sample_img=model_light.sample_image(16)
+                write_image(sample_img,img_path)
+    init_path=r'9_0.2075673551462329_net.pt'
+    if init_path is not None and os.path.exists(init_path):
+        model_light.net.load_state_dict(torch.load(init_path,weights_only=True))
+        sample_img('init_sample.jpg')
+
+
+
+    opt=optim.Adadelta(model_light.net.parameters(),lr=1e-4,weight_decay=1e-4)
+    log_dir='logs'
+    str_time=time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+    writer=SummaryWriter(os.path.join(log_dir,str_time))
+
+
+    run_count=100
+    train_count=0
+    eval_count=0
+
+    best_test_loss=None
+
+    for traind_id in range(run_count):
+        model_light.train()
+        model_light.net.train()
+        train_loss=[]
+        for id,i in enumerate(train_data):
+            data,label=i
+            data=data.cuda()
+            label=label.cuda()
+            data=normalize(data)
+
+            opt.zero_grad()
+            loss=model_light.training_step(data,label)
+            loss.backward()
+            opt.step()
+
+            # print(f'training , {traind_id} {id} : {loss.item()}')
+            writer.add_scalar('train/loss',loss.item(),train_count)
+            train_count+=1
+
+            train_loss.append(loss.item())
+
+            # print(f'max:{data.max()} min:{data.min()} mean:{data.mean()} std:{data.std()}')
+            # print(data.shape,label.shape)
+            # write_image(data,f'{id}.jpg')
+
+        model_light.eval()
+        model_light.net.eval()
+        eval_loss=[]
+        with torch.no_grad():
+            for id,i in enumerate(eval_data):
+                data,label=i
+                data=data.cuda()
+                label=label.cuda()
+                data=normalize(data)
+
+                loss=model_light.test_step(data,label)
+                # print(f'test , {traind_id} {id} : {loss.item()}')
+                writer.add_scalar('test/loss',loss.item(),eval_count)
+                eval_count+=1
+                eval_loss.append(loss.item())
+        
+        train_loss=np.mean(train_loss).item()
+        eval_loss=np.mean(eval_loss).item()
+
+        writer.add_scalar('train/loss_all',train_loss,traind_id)
+        writer.add_scalar('test/loss_all',eval_loss,traind_id)
+
+        print(f'{traind_id}, train loss:{train_loss}, eval loss:{eval_loss}')
+        if best_test_loss is None or eval_loss<best_test_loss:
+            torch.save(model_light.state_dict(), f'{traind_id}_{eval_loss}_lightning.pt')
+            torch.save(model_light.net.state_dict(), f'{traind_id}_{eval_loss}_net.pt')
+            
+            sample_img(f'{traind_id}_{eval_loss}_sample.jpg')
+
 
 if __name__ == "__main__":
     # cli_main()
