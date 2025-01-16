@@ -121,33 +121,55 @@ class ResNet(nn.Module):
     def forward(self,input_data):
         return input_data+self.net(input_data)
 
-class Diffusion(nn.Module):
-    def __init__(self,H,W,C,hidden_dim,group_num,layout_num,step_num,*args, **kwargs):
+class LinearNet(nn.Module):
+    def __init__(self,input_dim,output_dim,hidden_dim,layout_num,*args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.h=H
-        self.w=W
-        self.c=C
 
         self.pre_net=nn.Sequential(
-            nn.Conv2d(C,hidden_dim,kernel_size=3,padding=1),
-            nn.GroupNorm(group_num,hidden_dim),
+            nn.Linear(input_dim,hidden_dim),
+            # nn.BatchNorm1d(hidden_dim),
             nn.LeakyReLU(),
         )
         mid_net_list=[]
         for i in range(layout_num):
-            mid_net_list.append(nn.Conv2d(hidden_dim,hidden_dim,kernel_size=3,padding=1))
-            mid_net_list.append(nn.GroupNorm(group_num,hidden_dim))
-            mid_net_list.append(nn.LeakyReLU())
+            # mid_net_list.append(nn.Linear(hidden_dim,hidden_dim))
+            # mid_net_list.append(nn.BatchNorm1d(hidden_dim))
+            # mid_net_list.append(nn.LeakyReLU())
+            mid_net_list.append(ResNet(
+                nn.Sequential(
+                    nn.Linear(hidden_dim,hidden_dim),
+                    nn.BatchNorm1d(hidden_dim),
+                    nn.LeakyReLU(),
+                )
+            ))
             # mid_net_list.append(nn.Dropout2d())
         self.mid_net=nn.Sequential(
             *mid_net_list
         )
         self.post_net=nn.Sequential(
-            nn.Conv2d(hidden_dim,hidden_dim,kernel_size=3,padding=1),
-            nn.GroupNorm(group_num,hidden_dim),
+            nn.Linear(hidden_dim,hidden_dim),
+            # nn.BatchNorm1d(hidden_dim),
             nn.LeakyReLU(),
-            nn.Conv2d(hidden_dim,C,kernel_size=3,padding=1)
+            nn.Linear(hidden_dim,output_dim)
         )
+        
+        
+
+    def forward(self,input_data):
+        hidden_data=self.pre_net(input_data)
+        hidden_data3=self.mid_net(hidden_data)
+        out=self.post_net(hidden_data3)
+        return out
+    
+class Diffusion(nn.Module):
+    def __init__(self,input_dim,hidden_dim,group_num,layout_num,step_num,*args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pre_net=nn.Sequential(
+            nn.Linear(input_dim,hidden_dim),
+            nn.LeakyReLU(),
+        )
+
+        self.net=LinearNet(hidden_dim,input_dim,hidden_dim,layout_num)
 
         self.pos_params=nn.Parameter(torch.rand(step_num,hidden_dim))
         
@@ -156,28 +178,79 @@ class Diffusion(nn.Module):
     def forward(self,input_data,step):
         hidden_data=self.pre_net(input_data)
 
-        B,C,H,W=hidden_data.shape
-        pos_data=self.pos_params[step].view(B,C,1,1)
+        pos_data=self.pos_params[step].view(input_data.shape[0],-1)
         hidden_data2=hidden_data+pos_data
 
-        hidden_data3=self.mid_net(hidden_data2)
-        out=self.post_net(hidden_data3)
+        out=self.net(hidden_data2)
         return out
+
+
+
+class Encoder(nn.Module):
+    def __init__(self,input_dim,output_dim,hidden_dim,layout_num,*args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.pre_net=LinearNet(input_dim,hidden_dim,hidden_dim,layout_num-1)
+        self.mean_net=nn.Sequential(
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_dim,output_dim)
+        )
+        self.logvar_net=nn.Sequential(
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_dim,output_dim)
+        )
+        
+        
+
+    def forward(self,input_data):
+        input_data=input_data.reshape(input_data.shape[0],-1)
+        hidden_data=self.pre_net(input_data)
+        mean=self.mean_net(hidden_data)
+        logvar=self.logvar_net(hidden_data)
+        return mean,logvar
+  
+
+class VAE(nn.Module):
+    def __init__(self,H,W,C,hidden_dim,layout_num,embed_dim,*args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.h=H
+        self.w=W
+        self.c=C
+
+        input_dim=H*W*C
+        self.encoder=Encoder(input_dim,embed_dim,hidden_dim,layout_num)
+        self.decoder=LinearNet(embed_dim,input_dim,hidden_dim,layout_num)
+        
+
+    def forward(self,input_data):
+        input_shape=input_data.shape
+        mean,logvar=self.encoder(input_data)
+
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = mean + eps * std
+        # z=mean
+
+        recon_data=self.decoder(z)
+        recon_data=recon_data.reshape(input_shape)
+
+        return recon_data,mean,logvar
+
+
 
 class DiffusionLightning(LightningModule):
    
 
-    def __init__(self, H,W,C,hidden_dim,group_num,layout_num,
+    def __init__(self, net,latent_dim,
                  step_num=1000,beta_start=1e-4,beta_end=0.02):
         super().__init__()
-        self.save_hyperparameters()
-        self.H=H
-        self.W=W
-        self.C=C
         self.step_num=step_num
         self.beta_start=beta_start
         self.beta_end=beta_end
-        self.net=Diffusion( H,W,C,hidden_dim,group_num,layout_num,step_num)
+        self.latent_dim=latent_dim
+        self.net=net
         self.init_diffusion_params()
     
     def init_diffusion_params(self):
@@ -194,7 +267,7 @@ class DiffusionLightning(LightningModule):
         B=input_data.shape[0]
         noise_data=torch.randn_like(input_data)
         step_data=torch.randint(0,self.step_num,(B,))
-        hat_alpha=self.hat_alpha[step_data].view(B,1,1,1)
+        hat_alpha=self.hat_alpha[step_data].view(B,1)
         img_corr=torch.sqrt(hat_alpha)
         noise_corr=1-hat_alpha
 
@@ -231,16 +304,16 @@ class DiffusionLightning(LightningModule):
         x=batch
         noise_img,step,noise_data=self.add_noise(x)
         loss = F.mse_loss(noise_data, self(noise_img,step))
-        self.log(f"{stage}_loss", loss, on_step=True)
+        # self.log(f"{stage}_loss", loss, on_step=True)
         return loss
     
     def sample_image(self,batch_size):
-        init_data=torch.randn([batch_size,self.C,self.H,self.W]).cuda()
+        init_data=torch.randn([batch_size,self.latent_dim]).cuda()
         for i in reversed(range(self.step_num)):
             if i>0:
-                noise_data=torch.randn([batch_size,self.C,self.H,self.W]).cuda()
+                noise_data=torch.randn([batch_size,self.latent_dim]).cuda()
             else:
-                noise_data=torch.zeros([batch_size,self.C,self.H,self.W]).cuda()
+                noise_data=torch.zeros([batch_size,self.latent_dim]).cuda()
             step_data=torch.tensor([i]).repeat(batch_size).cuda()
             predict_noise=self(init_data,step_data)
 
@@ -267,16 +340,16 @@ class MyDataModule(LightningDataModule):
         self.batch_size = batch_size
 
     def train_dataloader(self):
-        return DataLoader(self.mnist_train, batch_size=self.batch_size)
+        return DataLoader(self.mnist_train, batch_size=self.batch_size,shuffle=True)
 
     def val_dataloader(self):
-        return DataLoader(self.mnist_val, batch_size=self.batch_size)
+        return DataLoader(self.mnist_val, batch_size=self.batch_size,shuffle=True)
 
     def test_dataloader(self):
-        return DataLoader(self.mnist_test, batch_size=self.batch_size)
+        return DataLoader(self.mnist_test, batch_size=self.batch_size,shuffle=True)
 
     def predict_dataloader(self):
-        return DataLoader(self.mnist_test, batch_size=self.batch_size)
+        return DataLoader(self.mnist_test, batch_size=self.batch_size,shuffle=True)
 
 
 def cli_main():
@@ -299,44 +372,175 @@ def write_image(input_img,img_path):
         )
     save_image(a, img_path)
 
-def main():
-    # a=Diffusion(64,64,1,128,8,3,100)
-    # b=torch.rand((8,1,64,64))
-    # c=torch.tensor([1,2,3,4,5,6,7,8])
-    # d=a(b,c)
-    # print(d.shape)
 
-    all_data=MyDataModule()
-    train_data=all_data.train_dataloader()
-    eval_data=all_data.test_dataloader()
 
-    data_mean=0.12
-    data_std=0.31
 
-    def normalize(input_data):
+def normalize(input_data):
+        data_mean=0.12
+        data_std=0.31
         return (input_data-data_mean)/data_std
 
-    model_light=DiffusionLightning(28,28,1,128,8,8,1000).cuda()
-    model_light.net.cuda()
+def get_dataloader(batch_size):
+    batch_size=128
+    all_data=MyDataModule(batch_size)
+    train_data=all_data.train_dataloader()
+    eval_data=all_data.test_dataloader()
+    return train_data,eval_data
+
+
+def train_vae():
+
+
+    vae_net=VAE(28,28,1,128,8,32).cuda()
+
+
+    
+    init_path=r'24_0.5511101597472082_net.pt'
+    if init_path is not None and os.path.exists(init_path):
+        vae_net.load_state_dict(torch.load(init_path,weights_only=True))
+
+    opt=optim.Adam(vae_net.parameters(),lr=1e-4,weight_decay=1e-4)
+    log_dir='logs'
+    str_time=time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+    writer=SummaryWriter(os.path.join(log_dir,str_time))
+
+
+    run_count=10000
+    train_count=0
+    eval_count=0
+
+    best_test_loss=None
+
+    def vae_loss(recon_x, x, mu, logvar,kl_weight=1e-2):
+        # 计算重构损失，这里使用均方误差（MSE）
+        reconstruction_loss = F.mse_loss(recon_x, x, reduction='mean')
+        
+        # 计算 KL 散度
+        kl_divergence = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+        kl_divergence = kl_divergence.mean()
+        
+        # 总损失为重构损失和 KL 散度的加权和
+        total_loss = reconstruction_loss + kl_divergence*kl_weight
+
+        # total_loss=reconstruction_loss
+        
+        return total_loss
+    
+    train_data,eval_data=get_dataloader(512)
+
+    for traind_id in range(run_count):
+        vae_net.train()
+        train_loss=[]
+        for id,i in enumerate(train_data):
+            data,label=i
+            data=data.cuda()
+            label=label.cuda()
+            data=normalize(data)
+
+            opt.zero_grad()
+            recon_data,mean,logvar=vae_net(data)
+            loss=vae_loss(recon_data,data,mean,logvar)
+            loss.backward()
+            opt.step()
+
+            # print(f'training , {traind_id} {id} : {loss.item()}')
+            writer.add_scalar('train/loss',loss.item(),train_count)
+            train_count+=1
+
+            train_loss.append(loss.item())
+
+            # print(f'max:{data.max()} min:{data.min()} mean:{data.mean()} std:{data.std()}')
+            # print(data.shape,label.shape)
+            # write_image(data,f'{id}.jpg')
+
+        vae_net.eval()
+        eval_loss=[]
+        last_eval_input=None
+        last_eval_recon=None
+        with torch.no_grad():
+            for id,i in enumerate(eval_data):
+                data,label=i
+                data=data.cuda()
+                label=label.cuda()
+                data=normalize(data)
+
+                recon_data,mean,logvar=vae_net(data)
+                loss=vae_loss(recon_data,data,mean,logvar)
+                # print(f'test , {traind_id} {id} : {loss.item()}')
+                writer.add_scalar('test/loss',loss.item(),eval_count)
+                eval_count+=1
+                eval_loss.append(loss.item())
+
+                last_eval_input=data
+                last_eval_recon=recon_data
+        
+        train_loss=np.mean(train_loss).item()
+        eval_loss=np.mean(eval_loss).item()
+
+        writer.add_scalar('train/loss_all',train_loss,traind_id)
+        writer.add_scalar('test/loss_all',eval_loss,traind_id)
+
+        print(f'{traind_id}, train loss:{train_loss}, eval loss:{eval_loss}')
+        if best_test_loss is None or eval_loss<best_test_loss:
+            torch.save(vae_net.state_dict(), f'{traind_id}_{eval_loss}_net.pt')
+            
+            save_image(last_eval_input,f'{traind_id}_{eval_loss}_input.jpg')
+            save_image(last_eval_recon,f'{traind_id}_{eval_loss}_recon.jpg')
+            best_test_loss=eval_loss
+
+class image_encoder:
+    def __init__(self,vae_path):
+        assert vae_path is not None
+        assert os.path.exists(vae_path)
+
+        vae_net=VAE(28,28,1,128,8,32).cuda()
+        vae_net.load_state_dict(torch.load(vae_path,weights_only=True))
+        vae_net.eval()
+
+        self.vae=vae_net
+
+    @torch.no_grad()
+    def encoder(self,input_img):
+        mean,_=self.vae.encoder(input_img)
+        return mean
+
+    
+    @torch.no_grad()
+    def decoder(self,input_img):
+        out=self.vae.decoder(input_img)
+        out=out.reshape(-1,1,28,28)
+        return out
+
+    
+
+def train_diffusion():
+
+    latent_dim=32
+
+    duffusion_net=Diffusion(latent_dim,256,8,8,1000).cuda()
+    model_light=DiffusionLightning(duffusion_net,latent_dim).cuda()
+
+    vae_class=image_encoder(r'467_0.29906790203686_net.pt')
 
 
     def sample_img(img_path):
             model_light.eval()
             model_light.net.eval()
             with torch.no_grad():
-                sample_img=model_light.sample_image(16)
+                sample_img=model_light.sample_image(64)
+                sample_img=vae_class.decoder(sample_img)
                 write_image(sample_img,img_path)
-    init_path=r'9_0.2075673551462329_net.pt'
+    init_path=None
     if init_path is not None and os.path.exists(init_path):
-        model_light.net.load_state_dict(torch.load(init_path,weights_only=True))
-        sample_img('init_sample.jpg')
+        duffusion_net.load_state_dict(torch.load(init_path,weights_only=True))
+    sample_img('diffusion_init_sample.jpg')
 
 
 
-    opt=optim.Adadelta(model_light.net.parameters(),lr=1e-4,weight_decay=1e-4)
+    opt=optim.Adam(model_light.net.parameters(),lr=1e-4,weight_decay=1e-4)
     log_dir='logs'
     str_time=time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-    writer=SummaryWriter(os.path.join(log_dir,str_time))
+    writer=SummaryWriter(os.path.join(log_dir,f'diffusion_{str_time}'))
 
 
     run_count=100
@@ -344,6 +548,15 @@ def main():
     eval_count=0
 
     best_test_loss=None
+
+
+    def handle_img(input_img):
+        input_img=normalize(input_img)
+        latent_data=vae_class.encoder(input_img)
+        return latent_data
+    
+    
+    train_data,eval_data=get_dataloader(512)
 
     for traind_id in range(run_count):
         model_light.train()
@@ -353,7 +566,7 @@ def main():
             data,label=i
             data=data.cuda()
             label=label.cuda()
-            data=normalize(data)
+            data=handle_img(data)
 
             opt.zero_grad()
             loss=model_light.training_step(data,label)
@@ -378,7 +591,7 @@ def main():
                 data,label=i
                 data=data.cuda()
                 label=label.cuda()
-                data=normalize(data)
+                data=handle_img(data)
 
                 loss=model_light.test_step(data,label)
                 # print(f'test , {traind_id} {id} : {loss.item()}')
@@ -394,12 +607,14 @@ def main():
 
         print(f'{traind_id}, train loss:{train_loss}, eval loss:{eval_loss}')
         if best_test_loss is None or eval_loss<best_test_loss:
-            torch.save(model_light.state_dict(), f'{traind_id}_{eval_loss}_lightning.pt')
-            torch.save(model_light.net.state_dict(), f'{traind_id}_{eval_loss}_net.pt')
+            torch.save(model_light.state_dict(), f'diffusion_{traind_id}_{eval_loss}_lightning.pt')
+            torch.save(model_light.net.state_dict(), f'diffusion_{traind_id}_{eval_loss}_net.pt')
             
-            sample_img(f'{traind_id}_{eval_loss}_sample.jpg')
+            sample_img(f'diffusion_{traind_id}_{eval_loss}_sample.jpg')
+            best_test_loss=eval_loss
 
 
 if __name__ == "__main__":
-    # cli_main()
-    main()
+    # train_vae()
+
+    train_diffusion()
