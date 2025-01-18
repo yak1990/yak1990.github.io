@@ -111,17 +111,20 @@ Mean(x_{t-1}|x_t)&=\frac{x_t-\frac{\beta_t}{\sqrt{1-\overline{\alpha}_t}}*\epsil
         $$z = N(0,I) \quad if \quad t>1  \quad else  \quad z=0$$
       2. predict backward noise
         $$\epsilon_{\theta}(x_t,t)$$
-      3. compute $x_0$
+      3. 由公式(12)、公式(10)推断，可以得出
+        
+        $$x_{t-1}=\frac{x_t-\frac{1-\alpha_t}{\sqrt{1-\overline{\alpha}_t}}*\epsilon_{\theta}(x_t,t)}{\sqrt{\alpha_t}}+\sigma_t*z$$
+        
+        $$其中：\sigma_t=\sqrt{\beta_t} \quad (假定，非真实方差)$$
+
+      <!-- 3. compute $x_0$
         $$x_0=\frac{x_t-\sqrt{(1-\overline{\alpha_t})}*\epsilon_{\theta}(x_t,t)}{\sqrt{\overline{\alpha_t}}}
         $$
       4. compute $x_{t-1}$
         $$x_{t-1}=\frac{\sqrt{\overline{\alpha}_{t-1}}*\beta_t}{1-\overline{\alpha_t}}*x_0+\frac{\sqrt{\alpha_t}*(1-\overline{\alpha}_{t-1})}{1-\overline{\alpha}_t}*x_t+\sqrt{\beta_t}*z$$
-        $$\overline{\alpha}_{t-1}=1 \quad when \quad t=1$$
+        $$\overline{\alpha}_{t-1}=1 \quad when \quad t=1$$ -->
             
         
 
-        <!-- $$x_{t-1}=\frac{x_t-\frac{1-\alpha_t}{\sqrt{1-\overline{\alpha}_t}}*\epsilon_{\theta}(x_t,t)}{\sqrt{\alpha_t}}+\sigma_t*z$$
-        其中：
-        $$\sigma_t=\sqrt{\beta_t}$$ -->
    3. 输出最终生成的图片$x_0$
    
